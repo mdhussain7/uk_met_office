@@ -22,17 +22,18 @@ Go to Postman application
 
 Create a request in postman
 BASE URL: http://127.0.0.1:8000/weather-parse/
-# ----------- POST API User Input Start ------------- 
-# reading_type can have either of the following Tmin', 'Tmax', 'Tmean', 'Rainfall', 'Sunshine','Raindays1mm','AirFrost'
-# data_feed can have 'date','ranked'
-# country_name can have either of the following 'UK', 'England', 'Wales', 'Scotland','Northern_Ireland','England_and_Wales','England_N','England_S','Scotland_N','Scotland_E','Scotland_W','England_E_and_NE','England_NW_and_N_Wales','Midlands','East_Anglia','England_SW_and_S_Wales','England_SE_and_Central_S'
-# ----------- POST User Input End --------------
+
+ #----------- POST API User Input Start ------------- #<br>
+ reading_type can have either of the following Tmin', 'Tmax', 'Tmean', 'Rainfall', 'Sunshine','Raindays1mm','AirFrost'<br>
+ data_feed can have 'date','ranked'<br>
+ country_name can have either of the following 'UK', 'England', 'Wales', 'Scotland','Northern_Ireland','England_and_Wales','England_N','England_S','Scotland_N','Scotland_E','Scotland_W','England_E_and_NE','England_NW_and_N_Wales','Midlands','East_Anglia','England_SW_and_S_Wales','England_SE_and_Central_S' <br>
+ #----------- POST User Input End --------------#
 
 
-#------------- GET API User Input Start -------------- 
-# reading_type can have either of the following Tmin', 'Tmax', 'Tmean', 'Rainfall', 'Sunshine','Raindays1mm','AirFrost'
-# data_feed can have 'date','ranked'
-# country can have either of the following 'UK', 'England', 'Wales', 'Scotland','Northern_Ireland','England_and_Wales','England_N','England_S','Scotland_N','Scotland_E','Scotland_W','England_E_and_NE','England_NW_and_N_Wales','Midlands','East_Anglia','England_SW_and_S_Wales','England_SE_and_Central_S'
-# if you know the process_id you can fetch from it
-# if you knwow the file_name 
-#------------ GET API User Input End ----------------
+#------------- GET API User Input Start -------------- #<br>
+ reading_type can have either of the following Tmin', 'Tmax', 'Tmean', 'Rainfall', 'Sunshine','Raindays1mm','AirFrost' <br>
+ data_feed can have 'date','ranked'<br>
+ country can have either of the following 'UK', 'England', 'Wales', 'Scotland','Northern_Ireland','England_and_Wales','England_N','England_S','Scotland_N','Scotland_E','Scotland_W','England_E_and_NE','England_NW_and_N_Wales','Midlands','East_Anglia','England_SW_and_S_Wales','England_SE_and_Central_S' <br>
+ if you know the process_id you can fetch from it <br>
+ if you knwow the file_name <br>
+#------------ GET API User Input End ----------------#
