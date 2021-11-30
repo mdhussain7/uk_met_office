@@ -1,1 +1,38 @@
-# uk_met_office
+# uk_met_office<br>
+This is a Python - django based project.<br>
+Please setup a virtual enviroment for the project.<br>
+step-1: command: python3 -m venv py3env<br>
+step-2: command: source ./py3env/bin/activate #activate for deactivate use command: deactivate<br>
+step-3: clone the project using the link https://github.com/mdhussain7/uk_met_office.git<br>
+step-4: pip3 install -r requirements.txt<br>
+step-5: After the successfull installation, <br> please goto the **py3env** and check for the location mentioned below <br>
+          ----    lib/python/site-packages/jsonfield/encoder.py<br>
+          ----    search for **from django.utils import six, timezone** <br>
+          ----    change it to as mentioned below,
+                --   from django.utils import timezone
+                --   try:
+                         from django.utils import six
+                     except:
+                         import six
+step-6: run command: python3 manage.py makemigrations
+step-7: run command: python3 manage.py migrate
+step-8: run command: python3 manage.py runserver 0:8000
+
+Go to Postman application
+
+Create a request in postman
+BASE URL: http://127.0.0.1:8000/weather-parse/
+# ----------- POST API User Input Start ------------- 
+# reading_type can have either of the following Tmin', 'Tmax', 'Tmean', 'Rainfall', 'Sunshine','Raindays1mm','AirFrost'
+# data_feed can have 'date','ranked'
+# country_name can have either of the following 'UK', 'England', 'Wales', 'Scotland','Northern_Ireland','England_and_Wales','England_N','England_S','Scotland_N','Scotland_E','Scotland_W','England_E_and_NE','England_NW_and_N_Wales','Midlands','East_Anglia','England_SW_and_S_Wales','England_SE_and_Central_S'
+# ----------- POST User Input End --------------
+
+
+#------------- GET API User Input Start -------------- 
+# reading_type can have either of the following Tmin', 'Tmax', 'Tmean', 'Rainfall', 'Sunshine','Raindays1mm','AirFrost'
+# data_feed can have 'date','ranked'
+# country can have either of the following 'UK', 'England', 'Wales', 'Scotland','Northern_Ireland','England_and_Wales','England_N','England_S','Scotland_N','Scotland_E','Scotland_W','England_E_and_NE','England_NW_and_N_Wales','Midlands','East_Anglia','England_SW_and_S_Wales','England_SE_and_Central_S'
+# if you know the process_id you can fetch from it
+# if you knwow the file_name 
+#------------ GET API User Input End ----------------
