@@ -1,0 +1,10 @@
+version: "3"
+
+services:
+  uk_met_office_web:
+    container_name: uk_met_office
+    image: uk_met_office_web:latest
+    command: bash -c " sleep 60 && python3 manage.py makemigrations && sleep 60 && python3 manage.py migrate && sleep 60 && python3 manage.py runserver 0.0.0.0:8000"
+    restart: always
+    ports:
+      - "8000:8000"
