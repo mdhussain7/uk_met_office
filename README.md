@@ -37,3 +37,31 @@ BASE URL: http://127.0.0.1:8000/weather-parse/
  if you know the process_id you can fetch from it <br>
  if you knwow the file_name <br>
 #------------ GET API User Input End ----------------#
+
+
+
+pipeline = [
+    {
+        "$lookup": {
+            "from": "customers",
+            "let": {"customer_id": "$customer_id"},
+            "pipeline": [
+                {"$match": {"$expr": {"$eq": ["$customer_id", "$$customer_id"]}}},
+                {"$project": {"name": 1, "email": 1}}  # Only include necessary fields
+            ],
+            "as": "customer_info"
+        }
+    },
+    {
+        "$unwind": "$customer_info"
+    },
+    {
+        "$project": {
+            "order_id": 1,
+            "order_date": 1,
+            "total_amount": 1,
+            "customer_name": "$customer_info.name",
+            "customer_email": "$customer_info.email"
+        }
+    }
+]
