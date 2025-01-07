@@ -37,9 +37,7 @@ BASE URL: http://127.0.0.1:8000/weather-parse/
  if you know the process_id you can fetch from it <br>
  if you knwow the file_name <br>
 #------------ GET API User Input End ----------------#
-
-
-
+<pre>
 pipeline = [
     {
         "$lookup": {
@@ -65,3 +63,4 @@ pipeline = [
         }
     }
 ]
+</pre>
