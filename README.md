@@ -14,6 +14,7 @@ step-5: After the successfull installation, <br> please goto the **py3env** and 
                          from django.utils import six
                      except:
                          import six
+
 step-6: run command: python3 manage.py makemigrations
 step-7: run command: python3 manage.py migrate
 step-8: run command: python3 manage.py runserver 0:8000
