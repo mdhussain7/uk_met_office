@@ -43,6 +43,13 @@ BASE URL: http://127.0.0.1:8000/weather-parse/
 from pymongo import UpdateOne
 from requests_kerberos import HTTPKerberosAuth
 import requests
+from itertools import islice
+
+# Utility to chunk data
+def chunk_data(data, chunk_size):
+    it = iter(data)
+    for first in it:
+        yield [first] + list(islice(it, chunk_size - 1))
 
 def sync_tai_data():
     base_url = "some_url"
@@ -53,48 +60,50 @@ def sync_tai_data():
     print(f"Querying TAI API ({url}) ...")
     response = requests.get(url, auth=HTTPKerberosAuth(principal=""), timeout=60)
     data = response.json().get("data", [])
+    data_count = response.json()['recorcount']
 
-    # Fetch existing EON IDs from the database
-    eonid_in_db = list(tai_role_sync_data_col.find({}, {"system.eon_id": 1, "_id": 0}))
-    eonid_db = [record["system.eon_id"] for record in eonid_in_db]
+    # Fetch existing EON IDs directly as a set for faster lookups
+    eonid_in_db = set(record["system.eon_id"] for record in tai_role_sync_data_col.find({}, {"eon_id": 1, "_id": 0}))
 
-    # Extract EON IDs from the TAI API response
-    eonid_in_tai = [record["system.eon_id"] for record in data]
+    # Extract EON IDs from API data
+    eonid_in_tai = {record["system.eon_id"] for record in data}
 
-    # Update operations for matching records
+    # Separate updates and inserts
     update_operations = []
-    if set(eonid_in_tai).intersection(set(eonid_db)):
-        for record in data:
-            values_to_update = {
-                "primary_technology_owner": record["system.primary_technology_owner"],
-                "technology_owner": record["system.technology_owner"],
-                "primary_business_owner": record["system.primary_business_owner"],
-                "business_owner": record["system.business_owner"],
-            }
-            update_operations.append(
-                UpdateOne(
-                    {"system.eon_id": record["system.eon_id"]},
-                    {"$set": values_to_update},
-                    upsert=True
-                )
-            )
-        if update_operations:
-            tai_role_sync_data_col.bulk_write(update_operations)
+    new_records = []
 
-    # Insert operations for new records
-    eonid_not_in_db = set(eonid_in_tai) - set(eonid_db)
-    filtered_data = [
-        {
-            "system.eon_id": record["system.eon_id"],
+    for record in data:
+        values_to_update = {
             "primary_technology_owner": record["system.primary_technology_owner"],
             "technology_owner": record["system.technology_owner"],
             "primary_business_owner": record["system.primary_business_owner"],
             "business_owner": record["system.business_owner"],
         }
-        for record in data if record["system.eon_id"] in eonid_not_in_db
-    ]
+        if record["system.eon_id"] in eonid_in_db:
+            update_operations.append(
+                UpdateOne(
+                    {"eon_id": record["system.eon_id"]},
+                    {"$set": values_to_update},
+                    upsert=True
+                )
+            )
+        else:
+            values_to_insert = {
+                "eon_id": record["system.eon_id"],
+                **values_to_update,
+            }
+            new_records.append(values_to_insert)
 
-    if filtered_data:
-        tai_role_sync_data_col.insert_many(filtered_data)
+    # Process updates in chunks
+    chunk_size = 1000
+    for chunk in chunk_data(update_operations, chunk_size):
+        tai_role_sync_data_col.bulk_write(chunk)
+
+    # Process inserts in chunks
+    for chunk in chunk_data(new_records, chunk_size):
+        tai_role_sync_data_col.insert_many(chunk)
+
+    print("Sync completed successfully.")
+
 
 </pre>
