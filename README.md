@@ -39,4 +39,62 @@ BASE URL: http://127.0.0.1:8000/weather-parse/
  if you know the process_id you can fetch from it <br>
  if you knwow the file_name <br>
 #------------ GET API User Input End ----------------#
+
+from pymongo import UpdateOne
+from requests_kerberos import HTTPKerberosAuth
+import requests
+
+def sync_tai_data():
+    base_url = "some_url"
+    dataset = "system"
+    columns = "system.system, system.con_id, system.primary_technology_owner, system.technology_owner, system.primary_business_owner, system.business_owner"
+    url = f"{base_url}/{dataset}?c={columns}"
+
+    print(f"Querying TAI API ({url}) ...")
+    response = requests.get(url, auth=HTTPKerberosAuth(principal=""), timeout=60)
+    data = response.json().get("data", [])
+
+    # Fetch existing EON IDs from the database
+    eonid_in_db = list(tai_role_sync_data_col.find({}, {"system.eon_id": 1, "_id": 0}))
+    eonid_db = [record["system.eon_id"] for record in eonid_in_db]
+
+    # Extract EON IDs from the TAI API response
+    eonid_in_tai = [record["system.eon_id"] for record in data]
+
+    # Update operations for matching records
+    update_operations = []
+    if set(eonid_in_tai).intersection(set(eonid_db)):
+        for record in data:
+            values_to_update = {
+                "primary_technology_owner": record["system.primary_technology_owner"],
+                "technology_owner": record["system.technology_owner"],
+                "primary_business_owner": record["system.primary_business_owner"],
+                "business_owner": record["system.business_owner"],
+            }
+            update_operations.append(
+                UpdateOne(
+                    {"system.eon_id": record["system.eon_id"]},
+                    {"$set": values_to_update},
+                    upsert=True
+                )
+            )
+        if update_operations:
+            tai_role_sync_data_col.bulk_write(update_operations)
+
+    # Insert operations for new records
+    eonid_not_in_db = set(eonid_in_tai) - set(eonid_db)
+    filtered_data = [
+        {
+            "system.eon_id": record["system.eon_id"],
+            "primary_technology_owner": record["system.primary_technology_owner"],
+            "technology_owner": record["system.technology_owner"],
+            "primary_business_owner": record["system.primary_business_owner"],
+            "business_owner": record["system.business_owner"],
+        }
+        for record in data if record["system.eon_id"] in eonid_not_in_db
+    ]
+
+    if filtered_data:
+        tai_role_sync_data_col.insert_many(filtered_data)
+
 </pre>
