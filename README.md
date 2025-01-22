@@ -43,12 +43,11 @@ BASE URL: http://127.0.0.1:8000/weather-parse/
 from pymongo import UpdateOne
 from requests_kerberos import HTTPKerberosAuth
 import requests
-from concurrent.futures import ThreadPoolExecutor
 
 def sync_tai_data():
     base_url = "some_url"
     dataset = "system"
-    columns = "system.system, system.eon_id, system.primary_technology_owner, system.technology_owner, system.primary_business_owner, system.business_owner"
+    columns = "system.system, system.con_id, system.primary_technology_owner, system.technology_owner, system.primary_business_owner, system.business_owner"
     url = f"{base_url}/{dataset}?c={columns}"
 
     print(f"Querying TAI API ({url}) ...")
@@ -56,64 +55,53 @@ def sync_tai_data():
     data = response.json().get("data", [])
 
     if not data:
-        print("No data retrieved from the API.")
+        print("No data received from TAI API.")
         return
 
-    # Fetch all existing eonid values in the database
+    # Fetch existing EON IDs from the database
     eonid_in_db = {
-        record["eon_id"]
-        for record in tai_role_sync_data_col.find({}, {"eon_id": 1, "_id": 0})
+        record["system.eon_id"] for record in tai_role_sync_data_col.find({}, {"system.eon_id": 1, "_id": 0})
     }
 
-    # Lambda for constructing values to update/insert
-    construct_values = lambda record: {
+    # Lambda to construct update values
+    construct_update_values = lambda record: {
         "primary_technology_owner": record["system.primary_technology_owner"],
         "technology_owner": record["system.technology_owner"],
         "primary_business_owner": record["system.primary_business_owner"],
         "business_owner": record["system.business_owner"],
     }
 
-    # Prepare update and insert operations
+    # Separate records into updates and inserts
     update_operations = []
     insert_data = []
 
     for record in data:
-        values = construct_values(record)
         if record["system.eon_id"] in eonid_in_db:
-            # Prepare an update operation
+            # Update operation for existing EON IDs
             update_operations.append(
                 UpdateOne(
-                    {"eon_id": record["system.eon_id"]},
-                    {"$set": values},
+                    {"system.eon_id": record["system.eon_id"]},
+                    {"$set": construct_update_values(record)},
                     upsert=True
                 )
             )
         else:
-            # Prepare a new document for insertion
-            values["eon_id"] = record["system.eon_id"]
-            insert_data.append(values)
+            # Insert operation for new EON IDs
+            insert_data.append({
+                "system.eon_id": record["system.eon_id"],
+                **construct_update_values(record),
+            })
 
-    # Lambda for parallel execution of updates and inserts
-    execute_in_parallel = lambda func, data: func(data) if data else None
+    # Execute all updates in a single bulk_write operation
+    if update_operations:
+        tai_role_sync_data_col.bulk_write(update_operations)
 
-    # Parallel execution of updates and inserts
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        executor.submit(execute_in_parallel, process_updates, update_operations)
-        executor.submit(execute_in_parallel, process_inserts, insert_data)
+    # Insert new data in a single insert_many operation
+    if insert_data:
+        tai_role_sync_data_col.insert_many(insert_data)
 
     print("Sync completed successfully.")
 
-# Process updates in bulk
-def process_updates(operations):
-    if operations:
-        tai_role_sync_data_col.bulk_write(operations)
-        print(f"Updated {len(operations)} records.")
-
-# Process inserts in bulk
-def process_inserts(data):
-    if data:
-        tai_role_sync_data_col.insert_many(data)
-        print(f"Inserted {len(data)} new records.")
 
 
 </pre>
