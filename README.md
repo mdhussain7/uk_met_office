@@ -59,25 +59,28 @@ def sync_tai_data():
         print("No data retrieved from the API.")
         return
 
-    # Get all eonids in one query
+    # Fetch all existing eonid values in the database
     eonid_in_db = {
         record["eon_id"]
         for record in tai_role_sync_data_col.find({}, {"eon_id": 1, "_id": 0})
     }
 
-    # Split data into update and insert sets
+    # Lambda for constructing values to update/insert
+    construct_values = lambda record: {
+        "primary_technology_owner": record["system.primary_technology_owner"],
+        "technology_owner": record["system.technology_owner"],
+        "primary_business_owner": record["system.primary_business_owner"],
+        "business_owner": record["system.business_owner"],
+    }
+
+    # Prepare update and insert operations
     update_operations = []
     insert_data = []
 
     for record in data:
-        values = {
-            "primary_technology_owner": record["system.primary_technology_owner"],
-            "technology_owner": record["system.technology_owner"],
-            "primary_business_owner": record["system.primary_business_owner"],
-            "business_owner": record["system.business_owner"],
-        }
-
+        values = construct_values(record)
         if record["system.eon_id"] in eonid_in_db:
+            # Prepare an update operation
             update_operations.append(
                 UpdateOne(
                     {"eon_id": record["system.eon_id"]},
@@ -86,25 +89,31 @@ def sync_tai_data():
                 )
             )
         else:
+            # Prepare a new document for insertion
             values["eon_id"] = record["system.eon_id"]
             insert_data.append(values)
 
+    # Lambda for parallel execution of updates and inserts
+    execute_in_parallel = lambda func, data: func(data) if data else None
+
     # Parallel execution of updates and inserts
     with ThreadPoolExecutor(max_workers=2) as executor:
-        if update_operations:
-            executor.submit(process_updates, update_operations)
-        if insert_data:
-            executor.submit(process_inserts, insert_data)
+        executor.submit(execute_in_parallel, process_updates, update_operations)
+        executor.submit(execute_in_parallel, process_inserts, insert_data)
 
     print("Sync completed successfully.")
 
+# Process updates in bulk
 def process_updates(operations):
-    tai_role_sync_data_col.bulk_write(operations)
-    print(f"Updated {len(operations)} records.")
+    if operations:
+        tai_role_sync_data_col.bulk_write(operations)
+        print(f"Updated {len(operations)} records.")
 
+# Process inserts in bulk
 def process_inserts(data):
-    tai_role_sync_data_col.insert_many(data)
-    print(f"Inserted {len(data)} new records.")
+    if data:
+        tai_role_sync_data_col.insert_many(data)
+        print(f"Inserted {len(data)} new records.")
 
 
 </pre>
