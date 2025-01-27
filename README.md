@@ -40,7 +40,7 @@ BASE URL: http://127.0.0.1:8000/weather-parse/
  if you knwow the file_name <br>
 #------------ GET API User Input End ----------------#
 
-import concurrent.futures
+import grequests
 from requests_kerberos import HTTPKerberosAuth, DISABLED
 from pymongo.operations import UpdateOne
 from core.utils.database import tai_role_sync_col
@@ -72,18 +72,14 @@ class TaiDataSynch(object):
         self.user_column = "user.user"
         self.url = f"{self.base_url}/{self.dataset}?c={self.columns}"
 
-    def get_user_responses(self, eon_ids):
-        """Batch user data request for multiple EON IDs."""
-        user_url = f"{self.base_url}/{self.user_dataset}/?f={self.filter}&eon_ids={'|'.join(eon_ids)}&c={self.user_column}"
+    def get_user_response(self, eon_id):
+        """Return a grequest object for async fetching users for a specific EON ID."""
+        user_url = f"{self.base_url}/{self.user_dataset}/?f={self.filter}={eon_id}&c={self.user_column}"
         try:
-            user_response = requests.get(user_url, auth=HTTPKerberosAuth(principal=""), timeout=60)
-            user_response.raise_for_status()
-            user_data = user_response.json().get('data', [])
-            user_map = {user['system.eon_id']: list(set(user['user.user'] for user in user_data))}
-            return user_map
+            return grequests.get(user_url, auth=HTTPKerberosAuth(principal=""), timeout=60)
         except requests.exceptions.RequestException as e:
-            print(f"Error fetching users for EON IDs {eon_ids}: {e}")
-            return {}
+            print(f"Error fetching users for EON ID {eon_id}: {e}")
+            return None
 
     def handle_error(self, error):
         if isinstance(error, requests.exceptions.RequestException):
@@ -109,25 +105,40 @@ class TaiDataSynch(object):
             values_to_update = []
             values_to_insert = []
 
-            # Get all EON IDs from the TAI data
-            eon_ids = [record["system.eon_id"] for record in data]
+            # Create the list of requests for fetching user data concurrently
+            user_requests = [self.get_user_response(record["system.eon_id"]) for record in data]
 
-            # Fetch user data for all EON IDs in one go (batching)
-            user_map = self.get_user_responses(eon_ids)
+            # Use grequests to send requests concurrently and process responses
+            responses = grequests.map(user_requests)
 
-            # Process each record in parallel using ThreadPoolExecutor
-            with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-                futures = {
-                    record["system.eon_id"]: executor.submit(self.process_record, record, user_map, eonid_in_db)
-                    for record in data
+            # Process each record and user response concurrently
+            for record, response in zip(data, responses):
+                eon_id = record["system.eon_id"]
+                if response:
+                    user_data = response.json().get('data', [])
+                    users = list(set(user['user.user'] for user in user_data))
+                else:
+                    users = []
+
+                technology_owner = list(set([record["system.primary_technology_owner"]] + 
+                                           str(record.get("system.technology_owner", "")).split(",")))
+                business_owner = list(set([record["system.primary_business_owner"]] + 
+                                          str(record.get("system.business_owner", "")).split(",")))
+
+                new_values = {
+                    "eon_id": eon_id,
+                    "technology_owner": technology_owner,
+                    "business_owner": business_owner,
+                    "users": users,
+                    "updated_at": datetime.now()
                 }
 
-                for eon_id, future in futures.items():
-                    result = future.result()
-                    if result:
-                        update, insert = result
-                        values_to_update.extend(update)
-                        values_to_insert.extend(insert)
+                if eon_id in eonid_in_db:
+                    # Prepare for update
+                    values_to_update.append(UpdateOne({"eon_id": eon_id}, {"$set": new_values}, upsert=True))
+                else:
+                    # Prepare for insert
+                    values_to_insert.append(new_values)
 
             # Perform bulk operations if needed
             if values_to_update:
@@ -138,34 +149,5 @@ class TaiDataSynch(object):
         except Exception as e:
             print('Exception: ', str(e))
             self.handle_error(e)
-
-    def process_record(self, record, user_map, eonid_in_db):
-        """Process each record and return values for update or insert."""
-        eon_id = record["system.eon_id"]
-        users = user_map.get(eon_id, [])
-
-        technology_owner = list(set([record["system.primary_technology_owner"]] +
-                                   str(record.get("system.technology_owner", "")).split(",")))
-        business_owner = list(set([record["system.primary_business_owner"]] +
-                                  str(record.get("system.business_owner", "")).split(",")))
-
-        new_values = {
-            "eon_id": eon_id,
-            "technology_owner": technology_owner,
-            "business_owner": business_owner,
-            "users": users,
-            "updated_at": datetime.now()
-        }
-
-        if eon_id in eonid_in_db:
-            # Prepare for update
-            return [UpdateOne({"eon_id": eon_id}, {"$set": new_values}, upsert=True)], []
-        else:
-            # Prepare for insert
-            return [], [new_values]
-
-
-
-
 
 </pre>
