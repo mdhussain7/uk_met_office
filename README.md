@@ -72,16 +72,18 @@ class TaiDataSynch(object):
         self.user_column = "user.user"
         self.url = f"{self.base_url}/{self.dataset}?c={self.columns}"
 
-    def get_user_response(self, eon_id):
-        user_url = f"{self.base_url}/{self.user_dataset}/?f={self.filter}={eon_id}&c={self.user_column}"
+    def get_user_responses(self, eon_ids):
+        """Batch user data request for multiple EON IDs."""
+        user_url = f"{self.base_url}/{self.user_dataset}/?f={self.filter}&eon_ids={'|'.join(eon_ids)}&c={self.user_column}"
         try:
             user_response = requests.get(user_url, auth=HTTPKerberosAuth(principal=""), timeout=60)
             user_response.raise_for_status()
             user_data = user_response.json().get('data', [])
-            return list(set(user['user.user'] for user in user_data))
+            user_map = {user['system.eon_id']: list(set(user['user.user'] for user in user_data))}
+            return user_map
         except requests.exceptions.RequestException as e:
-            print(f"Error fetching users for EON ID {eon_id}: {e}")
-            return []
+            print(f"Error fetching users for EON IDs {eon_ids}: {e}")
+            return {}
 
     def handle_error(self, error):
         if isinstance(error, requests.exceptions.RequestException):
@@ -107,35 +109,25 @@ class TaiDataSynch(object):
             values_to_update = []
             values_to_insert = []
 
-            # Create a ThreadPoolExecutor to process the user responses concurrently
+            # Get all EON IDs from the TAI data
+            eon_ids = [record["system.eon_id"] for record in data]
+
+            # Fetch user data for all EON IDs in one go (batching)
+            user_map = self.get_user_responses(eon_ids)
+
+            # Process each record in parallel using ThreadPoolExecutor
             with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-                # Prepare a list of futures for the get_user_response function
-                futures = {eon_id: executor.submit(self.get_user_response, eon_id) for eon_id in [record["system.eon_id"] for record in data]}
+                futures = {
+                    record["system.eon_id"]: executor.submit(self.process_record, record, user_map, eonid_in_db)
+                    for record in data
+                }
 
-                # Process each record and user response in parallel
-                for record in data:
-                    eon_id = record["system.eon_id"]
-                    users = futures[eon_id].result()
-
-                    technology_owner = list(set([record["system.primary_technology_owner"]] + 
-                                           str(record.get("system.technology_owner", "")).split(",")))
-                    business_owner = list(set([record["system.primary_business_owner"]] + 
-                                          str(record.get("system.business_owner", "")).split(",")))
-
-                    new_values = {
-                        "eon_id": eon_id,
-                        "technology_owner": technology_owner,
-                        "business_owner": business_owner,
-                        "users": users,
-                        "updated_at": datetime.now()
-                    }
-
-                    if eon_id in eonid_in_db:
-                        # Prepare for update
-                        values_to_update.append(UpdateOne({"eon_id": eon_id}, {"$set": new_values}, upsert=True))
-                    else:
-                        # Prepare for insert
-                        values_to_insert.append(new_values)
+                for eon_id, future in futures.items():
+                    result = future.result()
+                    if result:
+                        update, insert = result
+                        values_to_update.extend(update)
+                        values_to_insert.extend(insert)
 
             # Perform bulk operations if needed
             if values_to_update:
@@ -146,6 +138,32 @@ class TaiDataSynch(object):
         except Exception as e:
             print('Exception: ', str(e))
             self.handle_error(e)
+
+    def process_record(self, record, user_map, eonid_in_db):
+        """Process each record and return values for update or insert."""
+        eon_id = record["system.eon_id"]
+        users = user_map.get(eon_id, [])
+
+        technology_owner = list(set([record["system.primary_technology_owner"]] +
+                                   str(record.get("system.technology_owner", "")).split(",")))
+        business_owner = list(set([record["system.primary_business_owner"]] +
+                                  str(record.get("system.business_owner", "")).split(",")))
+
+        new_values = {
+            "eon_id": eon_id,
+            "technology_owner": technology_owner,
+            "business_owner": business_owner,
+            "users": users,
+            "updated_at": datetime.now()
+        }
+
+        if eon_id in eonid_in_db:
+            # Prepare for update
+            return [UpdateOne({"eon_id": eon_id}, {"$set": new_values}, upsert=True)], []
+        else:
+            # Prepare for insert
+            return [], [new_values]
+
 
 
 
