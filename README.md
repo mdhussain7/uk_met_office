@@ -40,7 +40,7 @@ BASE URL: http://127.0.0.1:8000/weather-parse/
  if you knwow the file_name <br>
 #------------ GET API User Input End ----------------#
 
-import grequests
+import concurrent.futures
 from requests_kerberos import HTTPKerberosAuth, DISABLED
 from pymongo.operations import UpdateOne
 from core.utils.database import tai_role_sync_col
@@ -49,8 +49,8 @@ from retrying import retry
 import time
 import requests
 
-class TaiDataSynch(object):
 
+class TaiDataSynch(object):
     BASE_ENDPOINT = {
         "dev": "http://taidss.webfarm.ms.com/web/1/services/query",
         "qa": "http://taidss.webfarm-qa.ms.com/web/1/services/query",
@@ -59,11 +59,10 @@ class TaiDataSynch(object):
     }
 
     def __init__(self, env: str = "prod"):
-        self.headers = {}
+        self.session = requests.Session()  # Reusing a session for better performance
+        self.session.auth = HTTPKerberosAuth(mutual_authentication=DISABLED)
         self.env = env
         self.dataset = "system"
-        session = requests.Session()
-        session.auth = HTTPKerberosAuth(mutual_authentication=DISABLED)
         self.base_url = self.BASE_ENDPOINT[self.env]
         self.columns = "system.system, system.eon_id, system.primary_technology_owner, " \
                        "system.technology_owner, system.primary_business_owner, system.business_owner"
@@ -73,13 +72,15 @@ class TaiDataSynch(object):
         self.url = f"{self.base_url}/{self.dataset}?c={self.columns}"
 
     def get_user_response(self, eon_id):
-        """Return a grequest object for async fetching users for a specific EON ID."""
         user_url = f"{self.base_url}/{self.user_dataset}/?f={self.filter}={eon_id}&c={self.user_column}"
         try:
-            return grequests.get(user_url, auth=HTTPKerberosAuth(principal=""), timeout=60)
+            user_response = self.session.get(user_url, timeout=60)
+            user_response.raise_for_status()
+            user_data = user_response.json().get('data', [])
+            return list(set(user['user.user'] for user in user_data))
         except requests.exceptions.RequestException as e:
             print(f"Error fetching users for EON ID {eon_id}: {e}")
-            return None
+            return []
 
     def handle_error(self, error):
         if isinstance(error, requests.exceptions.RequestException):
@@ -92,7 +93,7 @@ class TaiDataSynch(object):
     def synch_tai_data(self):
         try:
             print(f"TAI Request API: {self.url}")
-            response = requests.get(self.url, auth=HTTPKerberosAuth(principal=""), timeout=60)
+            response = self.session.get(self.url, timeout=60)
             response.raise_for_status()
             data = response.json().get("data", [])
             print(f"Number of Records: {response.json().get('numberOfRecords')}")
@@ -105,40 +106,35 @@ class TaiDataSynch(object):
             values_to_update = []
             values_to_insert = []
 
-            # Create the list of requests for fetching user data concurrently
-            user_requests = [self.get_user_response(record["system.eon_id"]) for record in data]
+            # Create a ThreadPoolExecutor to process the user responses concurrently
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:  # Optimized thread pool size
+                # Prepare a list of futures for the get_user_response function
+                futures = {eon_id: executor.submit(self.get_user_response, eon_id) for eon_id in [record["system.eon_id"] for record in data]}
 
-            # Use grequests to send requests concurrently and process responses
-            responses = grequests.map(user_requests)
+                # Process each record and user response in parallel
+                for record in data:
+                    eon_id = record["system.eon_id"]
+                    users = futures[eon_id].result()
 
-            # Process each record and user response concurrently
-            for record, response in zip(data, responses):
-                eon_id = record["system.eon_id"]
-                if response:
-                    user_data = response.json().get('data', [])
-                    users = list(set(user['user.user'] for user in user_data))
-                else:
-                    users = []
+                    technology_owner = list(set([record["system.primary_technology_owner"]] +
+                                                str(record.get("system.technology_owner", "")).split(",")))
+                    business_owner = list(set([record["system.primary_business_owner"]] +
+                                               str(record.get("system.business_owner", "")).split(",")))
 
-                technology_owner = list(set([record["system.primary_technology_owner"]] + 
-                                           str(record.get("system.technology_owner", "")).split(",")))
-                business_owner = list(set([record["system.primary_business_owner"]] + 
-                                          str(record.get("system.business_owner", "")).split(",")))
+                    new_values = {
+                        "eon_id": eon_id,
+                        "technology_owner": technology_owner,
+                        "business_owner": business_owner,
+                        "users": users,
+                        "updated_at": datetime.now()
+                    }
 
-                new_values = {
-                    "eon_id": eon_id,
-                    "technology_owner": technology_owner,
-                    "business_owner": business_owner,
-                    "users": users,
-                    "updated_at": datetime.now()
-                }
-
-                if eon_id in eonid_in_db:
-                    # Prepare for update
-                    values_to_update.append(UpdateOne({"eon_id": eon_id}, {"$set": new_values}, upsert=True))
-                else:
-                    # Prepare for insert
-                    values_to_insert.append(new_values)
+                    if eon_id in eonid_in_db:
+                        # Prepare for update
+                        values_to_update.append(UpdateOne({"eon_id": eon_id}, {"$set": new_values}, upsert=True))
+                    else:
+                        # Prepare for insert
+                        values_to_insert.append(new_values)
 
             # Perform bulk operations if needed
             if values_to_update:
