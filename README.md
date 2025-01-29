@@ -48,6 +48,8 @@ from datetime import datetime
 from retrying import retry
 import time
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
 class TaiDataSynch(object):
@@ -59,8 +61,19 @@ class TaiDataSynch(object):
     }
 
     def __init__(self, env: str = "prod"):
-        self.session = requests.Session()  # Reusing a session for better performance
+        self.session = requests.Session()
+
+        # Set up retries and connection pooling
+        retry_strategy = Retry(
+            total=5,
+            backoff_factor=1,
+            status_forcelist=[500, 502, 503, 504],
+            method_whitelist=["HEAD", "GET", "POST"]
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=100, pool_maxsize=100, pool_block=True)
+        self.session.mount("http://", adapter)
         self.session.auth = HTTPKerberosAuth(mutual_authentication=DISABLED)
+
         self.env = env
         self.dataset = "system"
         self.base_url = self.BASE_ENDPOINT[self.env]
