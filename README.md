@@ -159,4 +159,129 @@ class TaiDataSynch(object):
             print('Exception: ', str(e))
             self.handle_error(e)
 
+
+
+
+
+
+          ==========================================================================================================================================
+
+from requests_kerberos import HTTPKerberosAuth, DISABLED
+from pymongo.operations import UpdateOne
+from core.utils.database import tai_role_sync_col
+from core.utils.exceptions import ConfigError
+from core.utils.config import paw_config
+from datetime import datetime
+from retrying import retry
+import time
+import requests
+
+class TaiDataSynch(object):
+
+    BASE_ENDPOINT = {
+        "dev": "http://taidss.webfarm.ms.com/web/1/services/query",
+        "qa": "http://taidss.webfarm-qa.ms.com/web/1/services/query",
+        "uat": "http://taidss.webfarm.ms.com/web/1/services/query",
+        "prod": "http://taidss.webfarm.ms.com/web/1/services/query"
+    }
+
+    def __init__(self, env: str = "prod"):
+        self.headers = {}
+        self.env = env
+        self.dataset = "system"
+        self.session = requests.Session()
+        self.session.auth = HTTPKerberosAuth(mutual_authentication=DISABLED)
+        self.base_url = self.BASE_ENDPOINT[self.env]
+        self.columns = "system.system, system.eon_id, system.primary_technology_owner, " \
+                       "system.technology_owner, system.primary_business_owner, system.business_owner"
+        self.user_dataset = "user_roles"
+        self.filter = "system.system"
+        self.user_column = "user.user"
+        self.url = f"{self.base_url}/{self.dataset}?c={self.columns}"
+
+    def get_user_response(self, eon_id):
+        user_url = f"{self.base_url}/{self.user_dataset}/?f={self.filter}={eon_id}&c={self.user_column}"
+        try:
+            user_response = self.session.get(user_url, timeout=60)
+            user_response.raise_for_status()
+            user_data = user_response.json().get('data', [])
+            return list(set(user['user.user'] for user in user_data))
+        except requests.exceptions.RequestException as e:
+            print(f"Error fetching users for EON ID {eon_id}: {e}")
+            return []
+
+    def handle_error(self, error):
+        if isinstance(error, requests.exceptions.RequestException):
+            print('Retrying after a short delay.....')
+            time.sleep(5)
+        else:
+            print('Critical error occurred, aborting the sync')
+
+    @retry(stop_max_attempt_number=5, wait_fixed=7000)
+    def synch_tai_data(self):
+        try:
+            print(f"TAI Request API: {self.url}")
+            response = self.session.get(self.url, timeout=60)
+            response.raise_for_status()
+            data = response.json().get("data", [])
+            print(f"Number of Records: {response.json().get('numberOfRecords')}")
+            if not data:
+                raise Exception('No data received from TAI')
+
+            # Fetch existing EON IDs from the database
+            eonid_in_db = list(tai_role_sync_col.find({}, {"eon_id": 1, "_id": 0}))
+            eonid_db = [record["eon_id"] for record in eonid_in_db]
+
+            # Extract EON IDs from the TAI API response
+            eonid_in_tai = [record["system.eon_id"] for record in data]
+
+            values_to_update = []
+            if set(eonid_in_tai).intersection(set(eonid_db)):
+                for record in data:
+                    users = self.get_user_response(record['system.eon_id'])
+                    new_values_to_update = {
+                        "technology_owner": self.parse_owner_field(record["system.primary_technology_owner"], record["system.technology_owner"]),
+                        "business_owner": self.parse_owner_field(record["system.primary_business_owner"], record["system.business_owner"]),
+                        "users": users,
+                        "updated_at": datetime.now()
+                    }
+
+                    values_to_update.append(UpdateOne(
+                        {"eon_id": record["system.eon_id"]},
+                        {"$set": new_values_to_update},
+                        upsert=True
+                    ))
+
+                if values_to_update:
+                    tai_role_sync_col.bulk_write(values_to_update)
+            else:
+                # Insert operations for new records
+                eonid_not_in_db = set(eonid_in_tai) - set(eonid_db)
+                values_to_insert = []
+                for record in data:
+                    if record['system.eon_id'] in eonid_not_in_db:
+                        users = self.get_user_response(record['system.eon_id'])
+                        values_to_insert.append({
+                            "eon_id": record["system.eon_id"],
+                            "technology_owner": self.parse_owner_field(record["system.primary_technology_owner"], record["system.technology_owner"]),
+                            "business_owner": self.parse_owner_field(record["system.primary_business_owner"], record["system.business_owner"]),
+                            "users": users,
+                            "created_at": datetime.now(),
+                            "updated_at": datetime.now()
+                        })
+
+                if values_to_insert:
+                    tai_role_sync_col.insert_many(values_to_insert)
+
+        except Exception as e:
+            print(f"Exception: {str(e)}")
+            self.handle_error(e)
+
+    def parse_owner_field(self, primary_owner, additional_owners):
+        owners = [primary_owner]
+        if additional_owners:
+            owners.extend(str(additional_owners).split(","))
+        return list(set(owners))
+
+
 </pre>
