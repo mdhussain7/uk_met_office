@@ -283,5 +283,142 @@ class TaiDataSynch(object):
             owners.extend(str(additional_owners).split(","))
         return list(set(owners))
 
+==============================================================================================================
+import aiohttp
+import asyncio
+from requests_kerberos import HTTPKerberosAuth, DISABLED
+from pymongo.operations import UpdateOne
+from core.utils.database import tai_role_sync_col
+from datetime import datetime
+from retrying import retry
+import time
+
+class TaiDataSynch(object):
+
+    BASE_ENDPOINT = {
+        "dev": "http://taidss.webfarm.ms.com/web/1/services/query",
+        "qa": "http://taidss.webfarm-qa.ms.com/web/1/services/query",
+        "uat": "http://taidss.webfarm.ms.com/web/1/services/query",
+        "prod": "http://taidss.webfarm.ms.com/web/1/services/query"
+    }
+
+    def __init__(self, env: str = "prod"):
+        self.headers = {}
+        self.env = env
+        self.dataset = "system"
+        self.base_url = self.BASE_ENDPOINT[self.env]
+        self.columns = "system.system, system.eon_id, system.primary_technology_owner, " \
+                       "system.technology_owner, system.primary_business_owner, system.business_owner"
+        self.user_dataset = "user_roles"
+        self.filter = "system.system"
+        self.user_column = "user.user"
+        self.url = f"{self.base_url}/{self.dataset}?c={self.columns}"
+
+    async def get_user_response(self, session, eon_id):
+        user_url = f"{self.base_url}/{self.user_dataset}/?f={self.filter}={eon_id}&c={self.user_column}"
+        try:
+            async with session.get(user_url, timeout=60) as user_response:
+                user_response.raise_for_status()
+                user_data = await user_response.json()
+                return list(set(user['user.user'] for user in user_data.get('data', [])))
+        except Exception as e:
+            print(f"Error fetching users for EON ID {eon_id}: {e}")
+            return []
+
+    async def fetch_tai_data(self, session):
+        try:
+            async with session.get(self.url, timeout=60) as response:
+                response.raise_for_status()
+                data = await response.json()
+                print(f"Number of Records: {data.get('numberOfRecords')}")
+                return data.get("data", [])
+        except Exception as e:
+            print(f"Error fetching TAI data: {e}")
+            return []
+
+    def handle_error(self, error):
+        if isinstance(error, requests.exceptions.RequestException):
+            print('Retrying after a short delay.....')
+            time.sleep(5)
+        else:
+            print('Critical error occurred, aborting the sync')
+
+    @retry(stop_max_attempt_number=5, wait_fixed=7000)
+    async def synch_tai_data(self):
+        async with aiohttp.ClientSession(auth=HTTPKerberosAuth(mutual_authentication=DISABLED)) as session:
+            try:
+                data = await self.fetch_tai_data(session)
+                if not data:
+                    raise Exception('No data received from TAI')
+
+                # Fetch existing EON IDs from the database
+                eonid_in_db = list(tai_role_sync_col.find({}, {"eon_id": 1, "_id": 0}))
+                eonid_db = [record["eon_id"] for record in eonid_in_db]
+
+                # Extract EON IDs from the TAI API response
+                eonid_in_tai = [record["system.eon_id"] for record in data]
+
+                values_to_update = []
+                if set(eonid_in_tai).intersection(set(eonid_db)):
+                    tasks = []
+                    for record in data:
+                        tasks.append(self.process_record(session, record, values_to_update))
+
+                    await asyncio.gather(*tasks)
+
+                # Perform bulk write operation
+                if values_to_update:
+                    tai_role_sync_col.bulk_write(values_to_update)
+
+                # Handle insertions for new records
+                eonid_not_in_db = set(eonid_in_tai) - set(eonid_db)
+                values_to_insert = []
+                for record in data:
+                    if record['system.eon_id'] in eonid_not_in_db:
+                        users = await self.get_user_response(session, record['system.eon_id'])
+                        values_to_insert.append({
+                            "eon_id": record["system.eon_id"],
+                            "technology_owner": self.parse_owner_field(record["system.primary_technology_owner"], record["system.technology_owner"]),
+                            "business_owner": self.parse_owner_field(record["system.primary_business_owner"], record["system.business_owner"]),
+                            "users": users,
+                            "created_at": datetime.now(),
+                            "updated_at": datetime.now()
+                        })
+
+                if values_to_insert:
+                    tai_role_sync_col.insert_many(values_to_insert)
+
+            except Exception as e:
+                print(f"Exception: {str(e)}")
+                self.handle_error(e)
+
+    async def process_record(self, session, record, values_to_update):
+        users = await self.get_user_response(session, record['system.eon_id'])
+        new_values_to_update = {
+            "technology_owner": self.parse_owner_field(record["system.primary_technology_owner"], record["system.technology_owner"]),
+            "business_owner": self.parse_owner_field(record["system.primary_business_owner"], record["system.business_owner"]),
+            "users": users,
+            "updated_at": datetime.now()
+        }
+        values_to_update.append(UpdateOne(
+            {"eon_id": record["system.eon_id"]},
+            {"$set": new_values_to_update},
+            upsert=True
+        ))
+
+    def parse_owner_field(self, primary_owner, additional_owners):
+        owners = [primary_owner]
+        if additional_owners:
+            owners.extend(str(additional_owners).split(","))
+        return list(set(owners))
+
+# To run the asynchronous process
+async def run_sync():
+    tai_sync = TaiDataSynch(env="prod")
+    await tai_sync.synch_tai_data()
+
+# Run the async function using asyncio event loop
+if __name__ == '__main__':
+    asyncio.run(run_sync())
 
 </pre>
