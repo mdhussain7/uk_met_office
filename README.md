@@ -639,5 +639,123 @@ class TaiDataSynch(object):
         except Exception as e:
             print(f"Exception: {str(e)}")
             self.handle_error(e)
+======================================================================
+======================================================================
+from requests_kerberos import HTTPKerberosAuth, DISABLED
+from pymongo.operations import UpdateOne
+from core.utils.database import tai_role_sync_col
+from datetime import datetime
+from retrying import retry
+import time
+import requests
+
+class TaiDataSynch(object):
+
+    BASE_ENDPOINT = {
+        "dev": "http://taidss.webfarm.ms.com/web/1/services/query",
+        "qa": "http://taidss.webfarm-qa.ms.com/web/1/services/query",
+        "uat": "http://taidss.webfarm.ms.com/web/1/services/query",
+        "prod": "http://taidss.webfarm.ms.com/web/1/services/query"
+    }
+
+    def __init__(self, env: str = "prod"):
+        self.headers = {}
+        self.env = env
+        self.dataset = "system"
+        session = requests.Session()
+        session.auth = HTTPKerberosAuth(mutual_authentication=DISABLED)
+        self.base_url = self.BASE_ENDPOINT[self.env]
+        self.columns = "system.system, system.eon_id, system.primary_technology_owner, system.technology_owner, system.primary_business_owner, system.business_owner"
+        self.user_dataset = "user_roles"
+        self.filter = "system.system"
+        self.user_column = "user.user"
+        self.url = f"{self.base_url}/{self.dataset}?c={self.columns}"
+
+    def get_user_response(self, eon_id):
+        """Fetch user data for a given EON ID."""
+        self.user_url = f"{self.base_url}/{self.user_dataset}/?f={self.filter}={eon_id}&c={self.user_column}"
+        user_response = requests.get(self.user_url, auth=HTTPKerberosAuth(principal=""), timeout=60)
+        user_response.raise_for_status()
+        user_data = user_response.json().get('data')
+        if not user_data:
+            return []
+        return list(set([user['user.user'] for user in user_data]))
+
+    def build_owner_list(self, primary_owner, owner_field):
+        """Helper function to build owner list."""
+        if owner_field:
+            return [primary_owner] + list(set(owner_field.split(",")))
+        return [primary_owner]
+
+    def process_record(self, record):
+        """Helper function to process the data."""
+        users = self.get_user_response(record['system.eon_id'])
+        technology_owner = self.build_owner_list(record["system.primary_technology_owner"], record["system.technology_owner"])
+        business_owner = self.build_owner_list(record["system.primary_business_owner"], record["system.business_owner"])
+
+        return {
+            "eon_id": record["system.eon_id"],
+            "technology_owner": technology_owner,
+            "business_owner": business_owner,
+            "users": users,
+            "updated_at": datetime.now()  # Set updated time for both insert and update
+        }
+
+    def handle_error(self, error):
+        if isinstance(error, requests.exceptions.RequestException):
+            print('Retrying after a short delay.....')
+            time.sleep(5)
+        else:
+            print('Critical error occurred, aborting the sync')
+
+    @retry(stop_max_attempt_number=5, wait_fixed=7000)
+    def synch_tai_data(self):
+        try:
+            print(f"TAI Request API: {self.url}")
+            response = requests.get(self.url, auth=HTTPKerberosAuth(principal=""), timeout=60)
+            response.raise_for_status()
+            data = response.json().get("data", [])
+            print(response.json().get('numberOfRecords'))
+            if not data:
+                raise Exception('No data received from TAI.')
+
+            # Fetch existing EON IDs from the database and build a set for fast lookups
+            existing_records = list(tai_role_sync_col.find({}, {"eon_id": 1, "_id": 0}))
+            eonid_db = {record["eon_id"] for record in existing_records}  # Using set for fast lookup
+
+            # Prepare for bulk write operations
+            values_to_update = []
+            values_to_insert = []
+
+            # Process each record and decide whether to insert or update
+            for record in data:
+                processed_data = self.process_record(record)
+
+                # If the record exists in DB, we update it
+                if record["system.eon_id"] in eonid_db:
+                    values_to_update.append(UpdateOne(
+                        {"eon_id": record["system.eon_id"]},
+                        {"$set": processed_data},
+                        upsert=False  # No upsert needed here, we are updating only
+                    ))
+                else:
+                    # If the record doesn't exist, we insert it
+                    values_to_insert.append(processed_data)
+
+            # If both insert and update lists are populated, perform the operations
+            if values_to_update or values_to_insert:
+                # Update operations (if any)
+                if values_to_update:
+                    print(f"Updating {len(values_to_update)} records.")
+                    tai_role_sync_col.bulk_write(values_to_update)
+                
+                # Insert operations (if any)
+                if values_to_insert:
+                    print(f"Inserting {len(values_to_insert)} new records.")
+                    tai_role_sync_col.insert_many(values_to_insert)
+
+        except Exception as e:
+            print('Exception: ', str(e))
+            self.handle_error(e)
 
 </pre>
